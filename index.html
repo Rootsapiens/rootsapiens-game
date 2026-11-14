@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>Rootsapiens</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05070a; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; touch-action: none; }
+  canvas { display: block; width: 100vw; height: 56.25vw; max-height: 100vh; max-width: 177.78vh; background: #000; }
+  #pad { position: fixed; inset: auto 0 0 0; height: 96px; display: none; justify-content: space-between; padding: 0 14px 14px; pointer-events: none; }
+  #pad div { display: flex; gap: 12px; }
+  #pad button { pointer-events: auto; width: 72px; height: 72px; border-radius: 50%; border: 2px solid #e9dcb688; background: #0008; color: #e9dcb6; font: 700 22px sans-serif; }
+  @media (pointer: coarse) { #pad { display: flex; } }
+</style>
+</head>
+<body>
+<canvas id="c" width="1280" height="720"></canvas>
+<div id="pad">
+  <div><button data-k="ArrowLeft" aria-label="Left">&#9664;</button><button data-k="ArrowRight" aria-label="Right">&#9654;</button></div>
+  <div><button data-k="KeyE" aria-label="Grab or open">E</button><button data-k="Space" aria-label="Jump">&#9650;</button></div>
+</div>
+<script>
+'use strict';
+// Rootsapiens - a side-scrolling puzzle-platformer. Story: Omega Valley, Issue One.
+// Level 0 "The Kitchen Door": the cow that waits at the kitchen door every morning is not there; Joseph follows her out of the farm.
+// Level 1 "The Village Road": through the village at dawn, past the Ravens' truck, over the church wall to the mountain path.
+// No dialogue. Everything is drawn in code; no image or sound files. Add a level: push one more object into LEVELS.
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const W = 1280, H = 720, GROUND = 600;
+const C = { ink: '#141017', inkSoft: '#231c26', wood: '#3a2a22', straw: '#c9a24a', scarf: '#c8452f', skin: '#d9b08c', water: '#2c5f73', lamp: '#f6c873' };
+// art: painted images in art/ (or inlined as ART_DATA in the published build); every draw falls back to shapes until its image has loaded
+const ART = {};
+for (const n of ['bg_far.jpg', 'joseph_walk.png', 'cow_walk.png', 'p_farmhouse.png', 'p_barn.png', 'p_house.png', 'p_church.png', 'p_truck.png', 'p_crate.png', 'p_tree.png', 'p_wall.png', 'p_gate.png']) {
+  const im = new Image(); im.src = (window.ART_DATA && window.ART_DATA[n]) || 'art/' + n; ART[n.replace(/\.\w+$/, '')] = im;
+}
+const has = (n) => ART[n].complete && ART[n].naturalWidth > 0;
+const prop = (n, x, bottom, w, h, f) => ctx.drawImage(f ? dark(n, f) : ART[n], x, bottom - h, w, h);
+const shade = {};   // darkened copies, made once (a canvas filter on every frame is slow)
+function dark(n, f) { const k = n + f; if (!shade[k]) { const im = ART[n], c = document.createElement('canvas'); c.width = im.width; c.height = im.height; const x = c.getContext('2d'); x.filter = f; x.drawImage(im, 0, 0); shade[k] = c; } return shade[k]; }
+const ground = (x, w) => ({ x, y: GROUND, w, h: 400, kind: 'ground' });
+const steps = (x0, n, rise, end) => Array.from({ length: n }, (_, i) => ({ x: x0 + i * 100, y: GROUND - (i + 1) * rise, w: end - (x0 + i * 100), h: rise, kind: 'step' }));
+
+// ---------------------------------------------------------------- levels
+const LEVELS = [
+  {
+    name: 'Level 0  ·  The Kitchen Door', endLine: 'She knew where she was going.', width: 6000, startX: 230, endX: 4960,
+    solids: [
+      ground(-400, 3700), ground(3450, 3000), { x: -400, y: 0, w: 380, h: GROUND },
+      { x: 1000, y: 540, w: 46, h: 60, kind: 'stone' },     // low wall: first jump
+      { x: 1900, y: 350, w: 44, h: 250, kind: 'wall' },     // yard wall: needs the crate
+      { x: 2480, y: 380, w: 470, h: 16, kind: 'loft' },     // hayloft floor
+      { x: 2950, y: 380, w: 30, h: 220, kind: 'barndoor' }, // barn door, shut from outside
+      ...steps(3900, 3, 40, 6500),
+    ],
+    crates: [{ x: 1420, y: GROUND - 70, w: 90, h: 70 }],
+    ladders: [{ x: 2428, y: 380, w: 40, h: 220 }],
+    gates: [{ x: 4500, y: 300, w: 24, h: 180 }],
+    pits: [{ x: 3300, w: 150 }],
+    lights: [],
+    checkpoints: [230, 1080, 2020, 3160, 3820],
+    animals: { goX: 4250, y: 480, list: [{ x: 4720, s: 1 }, { x: 4860, s: 0.9 }, { x: 5010, s: 1.05 }] },
+    prints: [3480, 4480],
+    decor() {
+      // farmhouse with the lit kitchen door, and the rope with no cow on it
+      if (has('p_farmhouse')) prop('p_farmhouse', 10, GROUND + 8, 640, 424);
+      else { building(40, 520, 300, 120, C.inkSoft); win(400, GROUND - 210, 60); }
+      ctx.fillStyle = has('p_farmhouse') ? 'rgba(0,0,0,0)' : C.lamp; ctx.fillRect(196, GROUND - 150, 74, 150); ctx.fillStyle = 'rgba(246,200,115,0.18)'; ctx.beginPath(); ctx.moveTo(196, GROUND); ctx.lineTo(270, GROUND); ctx.lineTo(420, GROUND + 60); ctx.lineTo(120, GROUND + 60); ctx.fill();
+      ctx.strokeStyle = C.straw; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(310, GROUND - 60); ctx.quadraticCurveTo(350, GROUND - 6, 400, GROUND - 4); ctx.stroke();
+      ctx.fillStyle = C.wood; ctx.fillRect(304, GROUND - 90, 10, 90);
+      // barn: back wall, stalls, loft window, empty halter
+      if (has('p_barn')) prop('p_barn', 2130, GROUND + 6, 920, 664, 'brightness(0.42)');
+      else { ctx.fillStyle = '#2a2029'; ctx.fillRect(2200, GROUND - 400, 780, 400); ctx.beginPath(); ctx.moveTo(2170, GROUND - 400); ctx.lineTo(2590, GROUND - 560); ctx.lineTo(3010, GROUND - 400); ctx.fill(); ctx.fillStyle = '#e39a5a'; ctx.fillRect(2880, GROUND - 330, 70, 80); }
+      ctx.fillStyle = C.wood; for (let i = 0; i < 4; i++) ctx.fillRect(2560 + i * 90, GROUND - 90, 8, 90); ctx.fillRect(2560, GROUND - 60, 278, 6);
+      ctx.strokeStyle = C.straw; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(2700, GROUND - 60); ctx.lineTo(2700, GROUND - 22); ctx.stroke();
+      ctx.fillStyle = C.straw; ctx.beginPath(); ctx.ellipse(2760, 372, 90, 26, 0, Math.PI, 0); ctx.fill();
+    },
+  },
+  {
+    name: 'Level 1  ·  The Village Road', endLine: 'I could hear the bells after I stopped seeing the animals.', width: 6400, startX: 140, endX: 5720,
+    solids: [
+      ground(-400, 7200), { x: -400, y: 0, w: 380, h: GROUND },
+      { x: 700, y: 556, w: 150, h: 44, kind: 'stone' },        // fountain rim
+      { x: 1500, y: 340, w: 60, h: 260, kind: 'wall' },        // stacked wagons block the street: needs the handcart
+      { x: 1560, y: 340, w: 300, h: 260, kind: 'house' },      // roof 1
+      { x: 2010, y: 340, w: 300, h: 260, kind: 'house' },      // roof 2 (alley between: ladder back up)
+      { x: 3360, y: 490, w: 150, h: 110, kind: 'truck' },      // the Ravens' truck: bed
+      { x: 3510, y: 430, w: 70, h: 170, kind: 'truck' },       // cab
+      { x: 4250, y: 300, w: 40, h: 300, kind: 'wall' },        // churchyard wall
+      ...steps(4700, 5, 40, 7000),
+    ],
+    crates: [{ x: 1180, y: GROUND - 70, w: 90, h: 70 }],
+    ladders: [{ x: 1962, y: 340, w: 40, h: 260 }, { x: 4202, y: 300, w: 40, h: 300, rope: true }],
+    gates: [],
+    pits: [],
+    // the truck's headlight sweeps the street: on/off cycle; stand behind a pillar while it is on
+    lights: [{ x0: 2520, x1: 3330, on: 2.6, off: 2.6, covers: [{ x: 2730, w: 80 }, { x: 3020, w: 80 }], src: [3350, 520] }],
+    checkpoints: [140, 960, 2400, 3620, 4400],
+    animals: { goX: 4600, y: 400, list: [{ x: 5260, s: 1 }, { x: 5420, s: 0.9 }, { x: 5600, s: 1.05 }, { x: 5780, s: 0.8 }] },
+    cat: { x: 4460, goX: 4330 },
+    bell: { x: 4170, done: false },
+    prints: [3700, 5200],
+    decor() {
+      // village houses with a few lit windows
+      const hs = [[60, 300, 250, 90], [420, 240, 300, 70], [900, 360, 230, 110], [2380, 300, 260, 90], [2660, 420, 300, 80], [3000, 300, 240, 100]];
+      hs.forEach(([x, w, h, r], i) => {
+        if (has('p_house') && has('p_farmhouse')) { const n = i % 2 ? 'p_farmhouse' : 'p_house', im = ART[n], hh = h + r; prop(n, x, GROUND + 6, hh * im.width / im.height, hh, 'brightness(0.72)'); }
+        else { building(x, w, h, r, '#2a2230'); win(x + 40, GROUND - h + 50, 44); if (w > 280) win(x + w - 90, GROUND - h + 50, 44); }
+      });
+      // fountain
+      ctx.fillStyle = C.inkSoft; ctx.fillRect(765, 470, 20, 90); ctx.beginPath(); ctx.ellipse(775, 470, 40, 10, 0, 0, 7); ctx.fill();
+      ctx.strokeStyle = 'rgba(190,225,235,0.6)'; ctx.lineWidth = 2; for (const s of [-1, 1]) { ctx.beginPath(); ctx.moveTo(775, 462); ctx.quadraticCurveTo(775 + s * 40, 470 + Math.sin(G.t * 3) * 2, 775 + s * 50, 552); ctx.stroke(); }
+      // stacked wagons and the two roofs
+      if (!has('p_crate')) { ctx.fillStyle = C.wood; for (let i = 0; i < 3; i++) { ctx.fillRect(1492, 350 + i * 86, 76, 60); ctx.strokeStyle = C.ink; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(1508, 420 + i * 86, 14, 0, 7); ctx.arc(1552, 420 + i * 86, 14, 0, 7); ctx.stroke(); } }
+      if (!has('p_house')) for (const x of [1560, 2010]) { ctx.fillStyle = '#3a2a2e'; ctx.beginPath(); ctx.moveTo(x - 10, 340); ctx.lineTo(x + 150, 300); ctx.lineTo(x + 310, 340); ctx.fill(); win(x + 60, 420, 50); win(x + 190, 420, 50); }
+      // arcade pillars: the dark places to stand
+      for (const c of L.lights[0].covers) { ctx.fillStyle = '#0c090f'; ctx.fillRect(c.x, 360, c.w, 240); ctx.fillRect(c.x - 14, 350, c.w + 28, 18); }
+      // church: nave, tower, bell
+      if (has('p_church')) { prop('p_church', 3690, GROUND + 6, 610, 560); return; }
+      ctx.fillStyle = '#2a2230'; ctx.fillRect(3760, 330, 490, 270); ctx.beginPath(); ctx.moveTo(3740, 330); ctx.lineTo(4005, 210); ctx.lineTo(4270, 330); ctx.fill();
+      ctx.fillRect(4130, 110, 110, 220); ctx.beginPath(); ctx.moveTo(4120, 110); ctx.lineTo(4185, 40); ctx.lineTo(4250, 110); ctx.fill(); ctx.fillRect(4182, 10, 6, 40); ctx.fillRect(4170, 22, 30, 6);
+      ctx.fillStyle = '#e39a5a'; ctx.fillRect(4160, 150, 50, 70);
+      ctx.save(); ctx.translate(4185, 160); ctx.rotate(Math.sin(G.t * 4) * (L.bell.done ? 0.5 * Math.max(0, 1 - (G.t - L.bell.t) / 6) : 0)); ctx.fillStyle = C.ink; ctx.beginPath(); ctx.moveTo(-16, 44); ctx.quadraticCurveTo(-14, 6, 0, 4); ctx.quadraticCurveTo(14, 6, 16, 44); ctx.fill(); ctx.restore();
+      ctx.fillStyle = C.lamp; ctx.beginPath(); ctx.arc(3890, 420, 34, 0, 7); ctx.fill(); ctx.fillStyle = '#2a2230'; ctx.fillRect(3886, 386, 8, 68); ctx.fillRect(3856, 416, 68, 8);   // rose window
+    },
+  },
+];
+
+// ---------------------------------------------------------------- state
+let L = null, solids = [], crates = [], gates = [];
+const P = { x: 0, y: 0, w: 26, h: 64, vx: 0, vy: 0, face: 1, ground: false, state: 'idle', phase: 0, cp: 0, mant: null, lad: null };
+const G = { t: 0, cam: 0, started: false, ended: 0, fade: 1, hint: 0, bellT: 0, go: false, splashT: 0, splashX: 0, dead: 0, caught: false, level: 0 };
+function load(n) {
+  G.level = n; L = LEVELS[n]; solids = L.solids;
+  crates = L.crates.map((c) => ({ ...c, vy: 0 })); gates = L.gates.map((g) => ({ ...g, open: 0, hold: 0, opening: false }));
+  for (const a of L.animals.list) { if (a.x0 === undefined) a.x0 = a.x; a.x = a.x0; }
+  if (L.cat) { if (L.cat.x0 === undefined) L.cat.x0 = L.cat.x; L.cat.x = L.cat.x0; }
+  if (L.bell) L.bell.done = false;
+  Object.assign(P, { x: L.startX, y: GROUND - P.h, vx: 0, vy: 0, face: 1, state: 'idle', cp: 0, ground: true });
+  Object.assign(G, { ended: 0, fade: 1, hint: 0, go: false, dead: 0, caught: false, cam: 0, splashT: 0 });
+}
+const keys = {};
+const press = (k, v) => {
+  keys[k] = v;
+  if (v && !G.started) { G.started = true; audio(); }
+  if (v && G.ended > 4.5 && G.level + 1 < LEVELS.length) load(G.level + 1);
+};
+addEventListener('keydown', (e) => { if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.code)) e.preventDefault(); if (!e.repeat) press(e.code, true); });
+addEventListener('keyup', (e) => press(e.code, false));
+for (const b of document.querySelectorAll('#pad button')) {
+  b.addEventListener('pointerdown', (e) => { e.preventDefault(); press(b.dataset.k, true); });
+  for (const ev of ['pointerup', 'pointerleave', 'pointercancel']) b.addEventListener(ev, () => press(b.dataset.k, false));
+}
+const left = () => keys.ArrowLeft || keys.KeyA, right = () => keys.ArrowRight || keys.KeyD;
+const up = () => keys.ArrowUp || keys.KeyW, down = () => keys.ArrowDown || keys.KeyS;
+const jump = () => keys.Space || keys.ArrowUp || keys.KeyW, grab = () => keys.KeyE || keys.ShiftLeft || keys.ShiftRight;
+
+// ---------------------------------------------------------------- sound (synthesised)
+let AC = null;
+function audio() { if (!AC) { try { AC = new (window.AudioContext || window.webkitAudioContext)(); } catch { AC = null; } } }
+function tone(f, dur, vol, type = 'sine') {
+  if (!AC) return; const o = AC.createOscillator(), g = AC.createGain(); o.type = type; o.frequency.value = f;
+  g.gain.setValueAtTime(vol, AC.currentTime); g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + dur);
+  o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + dur);
+}
+function noise(dur, vol, freq) {
+  if (!AC) return; const n = AC.sampleRate * dur, buf = AC.createBuffer(1, n, AC.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const s = AC.createBufferSource(), f = AC.createBiquadFilter(), g = AC.createGain(); s.buffer = buf; f.type = 'lowpass'; f.frequency.value = freq; g.gain.value = vol;
+  s.connect(f).connect(g).connect(AC.destination); s.start();
+}
+const bell = (v = 1) => { tone(523, 1.6, 0.10 * v); tone(1046, 1.1, 0.05 * v); tone(1570, 0.7, 0.025 * v); };
+const bigBell = () => { tone(196, 3.5, 0.22); tone(392, 2.6, 0.10); tone(588, 1.8, 0.05); };
+const step = () => noise(0.06, 0.05, 900);
+const splash = () => noise(0.5, 0.25, 1400);
+
+// ---------------------------------------------------------------- physics
+const hit = (a, b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+function walls() { const s = solids.slice(); for (const g of gates) if (g.open < 1) s.push({ x: g.x, y: g.y - g.open * 170, w: g.w, h: g.h, kind: 'gate' }); return s; }
+function moveX(o, dx, list) {
+  o.x += dx;
+  for (const s of list) if (s !== o && hit(o, s)) { if (dx > 0) o.x = s.x - o.w; else if (dx < 0) o.x = s.x + s.w; return s; }
+  return null;
+}
+function moveY(o, dy, list) {
+  o.y += dy;
+  for (const s of list) if (s !== o && hit(o, s)) { if (dy > 0) { o.y = s.y - o.h; return 'floor'; } o.y = s.y + s.h; return 'ceil'; }
+  return null;
+}
+/** top of the walkable ground at x (for decoration and for the cat) */
+function topAt(x) { let y = GROUND; for (const s of solids) if ((s.kind === 'ground' || s.kind === 'step') && x >= s.x && x < s.x + s.w) y = Math.min(y, s.y); return y; }
+const inPit = (x) => L.pits.some((p) => x > p.x && x < p.x + p.w);
+function lightOn(l) { const c = (G.t % (l.on + l.off)); return c > l.off; }
+function respawn() { P.x = L.checkpoints[P.cp]; P.y = GROUND - P.h - 2; P.vx = P.vy = 0; P.state = 'idle'; G.dead = 0; G.caught = false; G.fade = 1; }
+
+function update(dt) {
+  G.t += dt;
+  if (!G.started) return;
+  G.fade = Math.max(0, G.fade - dt * 0.9);
+  G.hint += dt;
+  if (G.ended) { G.ended += dt; animals(dt); return; }
+  if (G.dead) { G.dead += dt; if (G.dead > 0.9) respawn(); return; }
+  const stat = walls();
+  for (const c of crates) { c.vy += 2200 * dt; if (moveY(c, c.vy * dt, stat.concat(crates))) c.vy = 0; }
+
+  if (P.state === 'mantle') {            // pulling himself up a ledge
+    const m = P.mant; m.t += dt / 0.42; const k = Math.min(1, m.t), e = k * k * (3 - 2 * k);
+    P.x = m.x0 + (m.x1 - m.x0) * Math.max(0, (e - 0.5) * 2); P.y = m.y0 + (m.y1 - m.y0) * Math.min(1, e * 2);
+    if (k >= 1) { P.state = 'idle'; P.vx = P.vy = 0; P.ground = true; }
+    return after(dt);
+  }
+  const dir = (right() ? 1 : 0) - (left() ? 1 : 0);
+  if (dir) P.face = dir;
+
+  // ladders and ropes
+  const mid = P.x + P.w / 2;
+  const lz = L.ladders.find((l) => mid > l.x && mid < l.x + l.w && P.y + P.h > l.y - 2 && P.y < l.y + l.h);
+  if (P.state !== 'ladder' && lz && (up() || (down() && !P.ground))) { P.state = 'ladder'; P.lad = lz; P.vx = P.vy = 0; P.x = lz.x + lz.w / 2 - P.w / 2; }
+  if (P.state === 'ladder') {
+    const l = P.lad, v = (down() ? 1 : 0) - (up() ? 1 : 0);
+    P.y += v * 150 * dt; P.phase += Math.abs(v) * dt * 9;
+    if (P.y + P.h < l.y + 2) P.y = l.y - P.h - 2;                          // top: level with the floor beside it
+    if (P.y + P.h >= GROUND) { P.y = GROUND - P.h; P.state = 'idle'; }
+    if (dir && (P.y + P.h <= l.y + 4 || P.y + P.h >= GROUND - 4)) { P.state = 'idle'; P.vy = 0; }
+    else if (keys.Space && dir) { P.state = 'idle'; P.vy = -420; }
+    if (P.state === 'ladder') return after(dt);
+  }
+
+  // run / push / pull
+  const near = (c) => Math.abs((P.y + P.h) - (c.y + c.h)) < 6 && ((P.x + P.w <= c.x + 2 && c.x - (P.x + P.w) < 10) || (P.x >= c.x + c.w - 2 && P.x - (c.x + c.w) < 10));
+  const held = grab() && P.ground ? crates.find(near) : null;
+  const speed = held ? 120 : 280;
+  P.vx += (dir * speed - P.vx) * Math.min(1, dt * (P.ground ? 14 : 6));
+  const others = stat.concat(crates), px0 = P.x;
+  const blocked = moveX(P, P.vx * dt, others);
+  if (held && dir && Math.sign(dir) !== Math.sign(held.x - P.x)) moveX(held, P.x - px0, stat.concat(crates));   // walking away while holding: it follows
+  if (blocked && crates.includes(blocked) && P.ground && dir) {   // walking into a crate pushes it
+    const b = blocked.x; moveX(blocked, dir * 110 * dt, stat.concat(crates)); P.x += blocked.x - b; P.vx = dir * 110;
+  }
+  // jump
+  if (jump() && P.ground && !P.jumpHeld) { P.vy = -760; P.ground = false; P.jumpHeld = true; step(); }
+  if (!jump()) P.jumpHeld = false;
+  if (P.vy < 0 && !jump()) P.vy += 2600 * dt;               // short hop when the key is let go
+  P.vy = Math.min(1400, P.vy + 2200 * dt);
+  const fy = moveY(P, P.vy * dt, others);
+  const wasGround = P.ground; P.ground = fy === 'floor';
+  if (fy) { if (P.ground && !wasGround && P.vy > 500) step(); P.vy = 0; }
+
+  // ledge grab: in the air, pressing into a wall whose top is at head height
+  if (!P.ground && dir && P.vy > -300 && blocked && !crates.includes(blocked) && blocked.kind !== 'gate') {
+    const top = blocked.y;
+    if (top > P.y - 12 && top < P.y + 36) {
+      const tx = dir > 0 ? blocked.x + 4 : blocked.x + blocked.w - P.w - 4, probe = { x: tx, y: top - P.h - 1, w: P.w, h: P.h };
+      if (!others.some((s) => s !== blocked && hit(probe, s))) { P.state = 'mantle'; P.mant = { t: 0, x0: P.x, y0: P.y, x1: tx, y1: top - P.h }; P.vx = P.vy = 0; }
+    }
+  }
+  // gates: hold E next to one
+  for (const g of gates) {
+    if (g.open < 1 && Math.abs(mid - g.x) < 110 && P.ground && grab()) { g.hold += dt; if (g.hold > 1.1) g.opening = true; } else if (!g.opening) g.hold = Math.max(0, g.hold - dt * 2);
+    if (g.opening && g.open < 1) { g.open = Math.min(1, g.open + dt * 0.9); if (g.open >= 1) noise(0.2, 0.12, 500); }
+  }
+  if (P.state !== 'mantle') P.state = !P.ground ? 'air' : held && dir ? 'pull' : Math.abs(P.vx) > 20 ? 'run' : 'idle';
+  if (P.state === 'run' || P.state === 'pull') { const o = P.phase; P.phase += Math.abs(P.vx) * dt * 0.045; if (Math.floor(o / Math.PI) !== Math.floor(P.phase / Math.PI)) step(); }
+  after(dt);
+}
+function after(dt) {
+  const mid = P.x + P.w / 2;
+  for (let i = P.cp + 1; i < L.checkpoints.length; i++) if (P.x > L.checkpoints[i]) P.cp = i;
+  if (P.y > GROUND + 30 && !G.dead) { G.dead = 0.01; G.splashT = 0.01; G.splashX = P.x; splash(); }
+  if (G.splashT) { G.splashT += dt; if (G.splashT > 1) G.splashT = 0; }
+  // the headlight: seen in the open while it is on = back to the last safe place
+  for (const l of L.lights) if (!G.dead && lightOn(l) && mid > l.x0 && mid < l.x1 && P.y + P.h > 380 && !l.covers.some((c) => mid > c.x && mid < c.x + c.w)) { G.dead = 0.01; G.caught = true; tone(110, 0.5, 0.2, 'sawtooth'); }
+  if (L.bell && !L.bell.done && P.y < 260 && Math.abs(mid - L.bell.x) < 90) { L.bell.done = true; L.bell.t = G.t; bigBell(); }
+  if (P.x > L.animals.goX) G.go = true;
+  animals(dt);
+  if (P.x > L.endX && !G.ended) { G.ended = 0.01; bell(); }
+  const target = Math.max(0, Math.min(L.width - W, mid - W * 0.42 + P.face * 60));
+  G.cam += (target - G.cam) * Math.min(1, dt * 3.2);
+}
+function animals(dt) {
+  if (L.cat && P.x > L.cat.goX) L.cat.x += 150 * dt;
+  if (!G.go) return;
+  for (const c of L.animals.list) c.x += 46 * c.s * dt;
+  G.bellT -= dt; if (G.bellT <= 0) { bell(0.8); G.bellT = 1.7; }
+}
+
+// ---------------------------------------------------------------- drawing
+function hills(par, base, amp, col, seed) {
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(0, H);
+  for (let x = 0; x <= W; x += 16) { const wx = x + G.cam * par; ctx.lineTo(x, base - amp * (Math.sin(wx * 0.0021 + seed) * 0.6 + Math.sin(wx * 0.0057 + seed * 2.3) * 0.4)); }
+  ctx.lineTo(W, H); ctx.fill();
+}
+function tree(x, y, s, col) {
+  if (has('p_tree')) { prop('p_tree', x - 150 * s, y + 14, 300 * s, 258 * s, 'brightness(0.5) saturate(0.8)'); return; }
+  ctx.fillStyle = col; ctx.fillRect(x - 5 * s, y - 70 * s, 10 * s, 70 * s);
+  for (const [dx, dy, r] of [[0, -95, 46], [-34, -78, 34], [34, -80, 36], [8, -122, 30]]) { ctx.beginPath(); ctx.arc(x + dx * s, y + dy * s, r * s, 0, 7); ctx.fill(); }
+}
+function building(x, w, h, roof, col) {
+  ctx.fillStyle = col; ctx.fillRect(x, GROUND - h, w, h);
+  ctx.beginPath(); ctx.moveTo(x - 24, GROUND - h); ctx.lineTo(x + w / 2, GROUND - h - roof); ctx.lineTo(x + w + 24, GROUND - h); ctx.fill();
+}
+function win(x, y, s) { ctx.fillStyle = C.lamp; ctx.fillRect(x, y, s, s); ctx.fillStyle = C.inkSoft; ctx.fillRect(x + s / 2 - 2, y, 4, s); ctx.fillRect(x, y + s / 2 - 2, s, 4); }
+function background() {
+  if (has('bg_far')) {      // the painted valley; it slides a little, and the mountain is nearer in every level
+    const im = ART.bg_far, z = 1.25 + G.level * 0.18, w = W * z, h = w * im.height / im.width;
+    ctx.fillStyle = C.ink; ctx.fillRect(0, 0, W, H);
+    ctx.drawImage(im, -Math.min(w - W, G.cam * 0.05) - G.level * 60, -150 - G.level * 90, w, h);
+    for (let i = -1; i < 14; i++) { const wx = i * 520 + 180, x = wx - G.cam * 0.45; if (x > -260 && x < W + 260) tree(x, 590, 1.25, '#2b2333'); }
+    hills(0.6, 600, 18, '#1b1520', 7.7);
+    return;
+  }
+  const k = G.level * 0.12;   // each level is a little later in the morning
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, k ? '#2a3458' : '#1b2440'); g.addColorStop(0.45, k ? '#86607a' : '#6a4a63'); g.addColorStop(0.72, '#e08a4f'); g.addColorStop(1, '#f3c57a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  const sx = 980 - G.cam * 0.03, sy = 470 - G.level * 70 - Math.min(60, G.t * 1.5);
+  const sg = ctx.createRadialGradient(sx, sy, 10, sx, sy, 330); sg.addColorStop(0, 'rgba(255,236,190,0.95)'); sg.addColorStop(0.12, 'rgba(255,200,120,0.55)'); sg.addColorStop(1, 'rgba(255,170,90,0)');
+  ctx.fillStyle = sg; ctx.fillRect(0, 0, W, H);
+  // the mountain, with the dark mouth of the cave; it is nearer in every level
+  const ms = 1 + G.level * 0.35, mx = 760 - G.cam * 0.06, by = 560;
+  ctx.fillStyle = '#3a3552'; ctx.beginPath();
+  for (const [dx, dy] of [[-620, 0], [-260, -310], [-120, -260], [0, -410], [170, -270], [300, -300], [700, 0]]) ctx.lineTo(mx + dx * ms, by + dy * ms);
+  ctx.fill(); ctx.fillStyle = '#211d33'; ctx.beginPath(); ctx.ellipse(mx + 40 * ms, by - 230 * ms, 26 * ms, 34 * ms, 0, 0, 7); ctx.fill();
+  hills(0.15, 520, 46, '#4b3c55', 1.3 + G.level); hills(0.3, 560, 40, '#3b2f44', 4.1 + G.level);
+  for (let i = -1; i < 14; i++) { const wx = i * 520 + 180, x = wx - G.cam * 0.45; if (x > -200 && x < W + 200) tree(x, 590, 1.25, '#2b2333'); }
+  hills(0.6, 600, 18, '#251e2c', 7.7);
+}
+function world() {
+  ctx.save(); ctx.translate(-Math.round(G.cam), 0);
+  L.decor();
+  // ladders and ropes
+  for (const l of L.ladders) {
+    ctx.strokeStyle = l.rope ? C.straw : C.wood;
+    if (l.rope) { ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(l.x + 20, l.y - 140); ctx.lineTo(l.x + 20 + Math.sin(G.t * 2) * 2, GROUND - 20); ctx.stroke(); for (let y = GROUND - 60; y > l.y; y -= 60) { ctx.beginPath(); ctx.arc(l.x + 20, y, 5, 0, 7); ctx.stroke(); } continue; }
+    ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(l.x + 4, GROUND); ctx.lineTo(l.x + 4, l.y - 30); ctx.moveTo(l.x + 36, GROUND); ctx.lineTo(l.x + 36, l.y - 30); ctx.stroke();
+    ctx.lineWidth = 4; for (let y = GROUND - 18; y > l.y - 20; y -= 26) { ctx.beginPath(); ctx.moveTo(l.x + 4, y); ctx.lineTo(l.x + 36, y); ctx.stroke(); }
+  }
+  // hoof prints leading on
+  if (L.prints) { ctx.fillStyle = 'rgba(20,16,23,0.5)'; for (let x = L.prints[0]; x < L.prints[1]; x += 64) { const y = topAt(x); ctx.beginPath(); ctx.ellipse(x, y + 5, 9, 4, 0, 0, 7); ctx.ellipse(x + 22, y + 8, 9, 4, 0, 0, 7); ctx.fill(); } }
+  // water
+  for (const d of L.pits) {
+    ctx.fillStyle = C.water; ctx.fillRect(d.x, GROUND + 26, d.w, 400);
+    ctx.strokeStyle = 'rgba(255,220,170,0.5)'; ctx.lineWidth = 2; for (let i = 0; i < 3; i++) { const o = (G.t * 30 + i * 50) % d.w; ctx.beginPath(); ctx.moveTo(d.x + o, GROUND + 34 + i * 9); ctx.lineTo(d.x + Math.min(d.w, o + 26), GROUND + 34 + i * 9); ctx.stroke(); }
+  }
+  if (G.splashT) { ctx.fillStyle = 'rgba(210,235,240,0.8)'; for (let i = 0; i < 9; i++) { const a = i / 8 * Math.PI, r = G.splashT * 150; ctx.beginPath(); ctx.arc(G.splashX + 13 + Math.cos(a) * r * 0.6, GROUND + 30 - Math.sin(a) * r + G.splashT * G.splashT * 200, 5, 0, 7); ctx.fill(); } }
+  // solids
+  for (const s of solids) {
+    if (s.kind === 'ground' && L.pits.length === 0) { ctx.fillStyle = C.ink; ctx.fillRect(s.x, s.y, s.w, s.h); continue; }
+    if (s.kind === 'house' && has('p_house')) { prop('p_house', s.x - 14, s.y + s.h + 6, s.w + 28, s.h + 26); continue; }
+    if (s.kind === 'truck' && has('p_truck')) { if (s.w === 150) prop('p_truck', 3326, GROUND + 8, 276, 153); continue; }
+    if ((s.kind === 'wall' || s.kind === 'stone') && has('p_wall')) {
+      if (s.x === 1500 && has('p_crate')) { for (let i = 0; i < 3; i++) prop('p_crate', s.x - 14, s.y + (i + 1) * 87, 88, 87); }
+      else ctx.drawImage(ART.p_wall, 0, 0, ART.p_wall.width, Math.min(ART.p_wall.height, ART.p_wall.width * s.h / (s.w + 16)), s.x - 8, s.y - 4, s.w + 16, s.h + 8);
+      continue;
+    }
+    ctx.fillStyle = s.kind === 'loft' || s.kind === 'barndoor' ? C.wood : s.kind === 'house' ? '#241b25' : s.kind === 'truck' ? '#1d2620' : C.ink; ctx.fillRect(s.x, s.y, s.w, s.h);
+    if (s.kind === 'wall' || s.kind === 'stone') { ctx.strokeStyle = 'rgba(255,255,255,0.06)'; ctx.lineWidth = 2; for (let y = s.y + 22; y < s.y + s.h; y += 24) { ctx.beginPath(); ctx.moveTo(s.x, y); ctx.lineTo(s.x + s.w, y); ctx.stroke(); } }
+    if (s.kind === 'barndoor') { ctx.strokeStyle = C.ink; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x + s.w, s.y + s.h); ctx.moveTo(s.x + s.w, s.y); ctx.lineTo(s.x, s.y + s.h); ctx.stroke(); }
+  }
+  // the truck's wheels and its headlight
+  for (const l of L.lights) {
+    ctx.fillStyle = '#0a0a0a'; for (const wx of has('p_truck') ? [] : [3400, 3540]) { ctx.beginPath(); ctx.arc(wx, 588, 24, 0, 7); ctx.fill(); }
+    const c = G.t % (l.on + l.off), on = c > l.off, warn = !on && c > l.off - 0.6;
+    ctx.fillStyle = on ? '#fff2c0' : warn && Math.floor(G.t * 14) % 2 ? '#c9a24a' : '#3a3320'; ctx.beginPath(); ctx.arc(l.src[0], l.src[1], 10, 0, 7); ctx.fill();
+    if (on) {
+      const g = ctx.createLinearGradient(l.src[0], 0, l.x0, 0); g.addColorStop(0, 'rgba(255,240,180,0.55)'); g.addColorStop(1, 'rgba(255,240,180,0.10)');
+      ctx.fillStyle = g; ctx.beginPath(); ctx.moveTo(l.src[0], l.src[1] - 8); ctx.lineTo(l.x0, 380); ctx.lineTo(l.x0, GROUND); ctx.lineTo(l.src[0], l.src[1] + 14); ctx.fill();
+      ctx.fillStyle = '#0c090f'; for (const cv2 of l.covers) { ctx.fillRect(cv2.x, 360, cv2.w, 240); ctx.beginPath(); ctx.moveTo(cv2.x, 380); ctx.lineTo(cv2.x - 150, 420); ctx.lineTo(cv2.x - 150, GROUND); ctx.lineTo(cv2.x, GROUND); ctx.fill(); }   // pillar and its shadow
+    }
+  }
+  // gates
+  for (const g of gates) {
+    const gy = g.y - g.open * 170;
+    if (has('p_gate')) { const k = 1 - g.open * 0.86; ctx.save(); ctx.translate(g.x + 160, 0); ctx.scale(k, 1); prop('p_gate', -290, g.y + g.h + 4, 290, 174); ctx.restore(); }   // it swings open on its right post
+    else { ctx.fillStyle = C.wood; ctx.fillRect(g.x - 8, g.y - 190, 10, 370); ctx.fillRect(g.x, gy, g.w, g.h); ctx.fillStyle = C.ink; for (let i = 0; i < 4; i++) ctx.fillRect(g.x - 60, gy + 20 + i * 40, 120, 8); }
+    if (g.hold > 0 && g.open < 1) { ctx.strokeStyle = C.lamp; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(g.x + 12, g.y - 30, 16, -Math.PI / 2, -Math.PI / 2 + Math.min(1, g.hold / 1.1) * Math.PI * 2); ctx.stroke(); }
+  }
+  for (const c of crates) {
+    if (has('p_crate')) { prop('p_crate', c.x - 2, c.y + c.h + 1, c.w + 4, c.h + 3); continue; }
+    ctx.fillStyle = C.wood; ctx.fillRect(c.x, c.y, c.w, c.h); ctx.strokeStyle = C.ink; ctx.lineWidth = 4; ctx.strokeRect(c.x + 2, c.y + 2, c.w - 4, c.h - 4);
+    ctx.beginPath(); ctx.moveTo(c.x + 4, c.y + 4); ctx.lineTo(c.x + c.w - 4, c.y + c.h - 4); ctx.stroke();
+  }
+  for (const c of L.animals.list) cow(c.x, L.animals.y, c.s, G.go ? G.t * 5 * c.s : 0);
+  if (L.cat) cat(L.cat.x, topAt(L.cat.x), P.x > L.cat.goX ? G.t * 12 : 0);
+  boy();
+  // grass in front
+  ctx.fillStyle = '#0d0a10'; for (let x = Math.floor(G.cam / 38) * 38 - 38; x < G.cam + W + 38; x += 38) { if (inPit(x + 6)) continue; const y = topAt(x + 6); ctx.beginPath(); ctx.moveTo(x, y + 2); ctx.lineTo(x + 6, y - 12 - (x * 7 % 9)); ctx.lineTo(x + 12, y + 2); ctx.fill(); }
+  ctx.restore();
+}
+function cow(x, y, s, ph) {
+  if (has('cow_walk')) { const f = Math.floor(ph * 1.3) % 8, w = 170 * s, h = 130 * s; ctx.drawImage(ART.cow_walk, f * 200 + 26, 0, 170, 130, x - w * 0.55, y - h * 0.93, w, h); return; }
+  ctx.save(); ctx.translate(x, y); ctx.scale(s, s); ctx.fillStyle = C.ink;
+  ctx.beginPath(); ctx.ellipse(0, -62, 62, 30, 0, 0, 7); ctx.fill(); ctx.beginPath(); ctx.ellipse(66, -78, 22, 16, -0.3, 0, 7); ctx.fill();
+  ctx.fillRect(74, -100, 5, 14); ctx.fillRect(58, -100, 5, 12);
+  for (const [lx, o] of [[-40, 0], [-22, Math.PI], [26, Math.PI], [44, 0]]) { ctx.save(); ctx.translate(lx, -44); ctx.rotate(Math.sin(ph + o) * 0.35); ctx.fillRect(-5, 0, 10, 46); ctx.restore(); }
+  ctx.strokeStyle = C.ink; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-60, -70); ctx.quadraticCurveTo(-80, -50, -72 + Math.sin(ph) * 6, -24); ctx.stroke();
+  ctx.fillStyle = C.lamp; ctx.beginPath(); ctx.arc(54, -56 + Math.abs(Math.sin(ph)) * 3, 5, 0, 7); ctx.fill();
+  ctx.restore();
+}
+function cat(x, y, ph) {           // "a cat who knows where it's going"
+  ctx.save(); ctx.translate(x, y); ctx.fillStyle = C.ink;
+  ctx.beginPath(); ctx.ellipse(0, -18, 20, 9, 0, 0, 7); ctx.fill(); ctx.beginPath(); ctx.arc(20, -24, 8, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(15, -30); ctx.lineTo(17, -38); ctx.lineTo(21, -31); ctx.moveTo(22, -31); ctx.lineTo(26, -38); ctx.lineTo(27, -29); ctx.fill();
+  for (const [lx, o] of [[-12, 0], [-6, Math.PI], [8, Math.PI], [14, 0]]) { ctx.save(); ctx.translate(lx, -13); ctx.rotate(Math.sin(ph + o) * 0.5); ctx.fillRect(-2, 0, 4, 13); ctx.restore(); }
+  ctx.strokeStyle = C.ink; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(-19, -20); ctx.quadraticCurveTo(-34, -30, -30, -46 + Math.sin(ph * 0.5) * 3); ctx.stroke();
+  ctx.restore();
+}
+function boy() {
+  const cx = P.x + P.w / 2, fy = P.y + P.h, f = P.face, run = P.state === 'run' || P.state === 'pull';
+  if (has('joseph_walk')) {          // his painted walk cycle: 8 frames of 240x220, feet at y=213
+    const fr = run ? Math.floor(P.phase / (Math.PI / 4)) % 8 : P.state === 'air' ? 4 : P.state === 'ladder' ? (Math.floor(P.phase) % 2 ? 2 : 6) : 2, k = 0.42;
+    ctx.save(); ctx.translate(cx, fy + 3); ctx.scale(f, 1); if (P.state === 'pull') ctx.rotate(-0.12);
+    ctx.drawImage(ART.joseph_walk, fr * 240, 0, 240, 220, -120 * k, -213 * k, 240 * k, 220 * k); ctx.restore(); return;
+  }
+  const sw = run ? Math.sin(P.phase) : P.state === 'air' ? 0.7 : P.state === 'ladder' ? Math.sin(P.phase) : 0;
+  const lean = run ? 0.12 * f : P.state === 'pull' ? -0.2 * f : 0, bob = run ? Math.abs(Math.cos(P.phase)) * 3 : Math.sin(G.t * 2) * 0.8;
+  ctx.save(); ctx.translate(cx, fy - bob); ctx.rotate(lean);
+  ctx.strokeStyle = '#1c1820'; ctx.lineCap = 'round'; ctx.lineWidth = 9;
+  for (const s of [1, -1]) { const a = sw * s * 0.7; ctx.beginPath(); ctx.moveTo(0, -30); ctx.lineTo(Math.sin(a) * 14, -15); ctx.lineTo(Math.sin(a) * 22 - f * Math.max(0, -Math.cos(a + 1.2)) * 6, 0); ctx.stroke(); }
+  ctx.fillStyle = '#4a3a2c'; ctx.beginPath(); ctx.roundRect(-10, -54, 20, 28, 7); ctx.fill();
+  ctx.lineWidth = 7; ctx.strokeStyle = '#4a3a2c';
+  const armUp = P.state === 'mantle' || P.state === 'ladder';
+  for (const s of [1, -1]) { const a = armUp ? -2.6 : P.state === 'pull' ? 1.2 * f : -sw * s * 0.8; ctx.beginPath(); ctx.moveTo(0, -48); ctx.lineTo(Math.sin(a) * 16, -48 + Math.cos(a) * 18); ctx.stroke(); }
+  ctx.fillStyle = C.scarf; ctx.beginPath(); ctx.roundRect(-9, -57, 18, 7, 3); ctx.fill(); ctx.fillRect(-f * 9 - 2, -55, 5, 15 + sw * 2);
+  ctx.fillStyle = C.skin; ctx.beginPath(); ctx.arc(f * 1.5, -66, 9.5, 0, 7); ctx.fill();
+  ctx.fillStyle = '#231a16'; ctx.beginPath(); ctx.arc(f * 0.5, -69, 10, Math.PI * 0.95, Math.PI * 2.05); ctx.fill();
+  ctx.restore();
+}
+function overlay() {
+  const v = ctx.createRadialGradient(W / 2, H / 2, 300, W / 2, H / 2, 760); v.addColorStop(0, 'rgba(0,0,0,0)'); v.addColorStop(1, 'rgba(8,5,12,0.62)'); ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  ctx.textAlign = 'center';
+  if (!G.started) {
+    ctx.fillStyle = 'rgba(5,4,8,0.55)'; ctx.fillRect(0, 0, W, H); ctx.fillStyle = '#f1e2bd';
+    ctx.font = '700 64px Georgia, serif'; ctx.fillText('ROOTSAPIENS', W / 2, 300);
+    ctx.font = '500 28px Georgia, serif'; ctx.fillText(L.name, W / 2, 350);
+    ctx.font = '500 22px sans-serif'; ctx.fillStyle = '#d8c79f'; ctx.fillText('Press any key  /  اضغط أي زر', W / 2, 440);
+  } else if (G.hint < 9 && !G.ended) {
+    ctx.globalAlpha = Math.min(1, G.hint, 9 - G.hint) * 0.9; ctx.fillStyle = '#f1e2bd';
+    if (G.hint < 3.5) { ctx.font = '500 30px Georgia, serif'; ctx.fillText(L.name, W / 2, 110); }
+    ctx.font = '500 22px sans-serif'; ctx.fillText('← →  move      Space  jump / climb      E  hold: grab, open', W / 2, 668); ctx.globalAlpha = 1;
+  }
+  if (G.fade > 0 || G.dead) { const a = G.dead ? Math.min(1, G.dead * 1.4) : G.fade; ctx.fillStyle = G.caught ? `rgba(255,244,200,${a})` : `rgba(0,0,0,${a})`; ctx.fillRect(0, 0, W, H); }
+  if (G.ended) {
+    const a = Math.min(1, Math.max(0, (G.ended - 1.2) / 2)); ctx.fillStyle = `rgba(5,4,8,${a})`; ctx.fillRect(0, 0, W, H);
+    if (G.ended > 3) {
+      ctx.globalAlpha = Math.min(1, (G.ended - 3) / 1.5); ctx.fillStyle = '#f1e2bd'; ctx.font = '700 40px Georgia, serif'; ctx.fillText(L.endLine, W / 2, 330);
+      ctx.font = '500 24px Georgia, serif'; ctx.fillText(G.level + 1 < LEVELS.length ? 'Press any key for the next level' : 'End of ' + L.name.split('  ')[0], W / 2, 390); ctx.globalAlpha = 1;
+    }
+  }
+}
+
+// ---------------------------------------------------------------- loop
+load(Math.max(0, Math.min(LEVELS.length - 1, parseInt(location.hash.slice(1), 10) || 0)));   // index.html#1 starts at Level 1
+let last = performance.now(), acc = 0;
+function frame(now) {
+  acc += Math.min(0.1, (now - last) / 1000); last = now;
+  while (acc >= 1 / 120) { update(1 / 120); acc -= 1 / 120; }
+  background(); world(); overlay();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+window.__lv = { P, G, keys, press, load, get L() { return L; }, get crates() { return crates; }, get gates() { return gates; } };   // for automated play tests
+</script>
+</body>
+</html>
